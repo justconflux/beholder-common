@@ -1,0 +1,25 @@
+{
+  "name": "beholder/beholder-common",
+  "type": "library",
+  "description": "Common classes for working with the beholder bot framework",
+  "keywords": ["irc"],
+  "license": "GPL-3.0-only",
+  "authors": [
+    {
+      "name": "nj",
+      "email": "nj@justconflux.net",
+      "homepage": "https://justconflux.net",
+      "role": "Developer"
+    }
+  ],
+  "require": {
+    "php": ">=8.2",
+    "ext-pdo": "*",
+    "psr/log": "^3.0"
+  },
+  "autoload": {
+    "psr-4": {
+      "Beholder\\Common\\": "src"
+    }
+  }
+}
