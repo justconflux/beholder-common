@@ -22,6 +22,12 @@ readonly class Channel
         return $this->normalize() === $channel->normalize();
     }
 
+    public function isValid(): bool
+    {
+        // TODO: Needs a regex
+        return preg_match('//', $this->channel); // Not sure if I should normalize before validating?
+    }
+
     /**
      * @param array<Channel> $channels
      * @return bool
