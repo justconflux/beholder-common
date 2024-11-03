@@ -22,6 +22,14 @@ readonly class Nick
         return $this->normalize() === $nick->normalize();
     }
 
+    public function isValid(): bool
+    {
+        // Must not start with a channel prefix character (probably # and &), or a colon
+        // Must not contain a space 0x20.
+        $channelPrefixCharacters = '#&'; // TODO: Must get these from the connected network details
+        return preg_match("/^[^$channelPrefixCharacters][^\x20]+$/", $this->nick);
+    }
+
     /**
      * @param array<Nick> $nicks
      * @return bool

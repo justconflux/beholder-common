@@ -24,8 +24,10 @@ readonly class Channel
 
     public function isValid(): bool
     {
-        // TODO: Needs a regex
-        return preg_match('//', $this->channel); // Not sure if I should normalize before validating?
+        // Must start with a valid channel prefix character (probably # or &)
+        // Must not contain a space 0x20, a comma 0x2C, or a BELL/Ctrl+G 0x07.
+        $validPrefixCharacters = '#&'; // TODO: Must get these from the connected network details
+        return preg_match("/^[$validPrefixCharacters][^\x20\x2c\x07]+$/", $this->channel);
     }
 
     /**
