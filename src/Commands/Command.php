@@ -7,11 +7,11 @@ use InvalidArgumentException;
 
 class Command
 {
-    protected string $command;
+    readonly protected string $command;
 
     public function __construct(
         string $command,
-        protected string $description,
+        readonly protected string $description,
         readonly protected string $syntax,
         public Closure $callback,
     )
