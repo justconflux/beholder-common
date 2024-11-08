@@ -80,75 +80,30 @@ abstract class Pdo
     {
         $this->withDatabaseConnection(
             function (Base $connectionResource) use ($schemaConfigKey) {
-                $result = $connectionResource->query(
-                    'SHOW TABLES LIKE "core_config"'
-                );
+                $this->createCoreConfigTableIfMissing($connectionResource);
 
-                if (false === $result) {
-                    throw new PdoPersistenceException($connectionResource);
-                }
+                $actualSchemaVersion = $this->getCurrentSchemaVersion($connectionResource, $schemaConfigKey);
 
-                $isTableMissing = $result->rowCount() === 0;
-
-                $result->closeCursor();
-
-                if ($isTableMissing) {
-                    $result = $connectionResource->query(
-                        <<< EOD
-                    CREATE TABLE `core_config` (
-                        `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
-                        `config_key` VARCHAR(255) NOT NULL DEFAULT '',
-                        `config_value` VARCHAR(255) NOT NULL DEFAULT '',
-                        PRIMARY KEY (`id`),
-                        UNIQUE KEY(`config_key`)
-                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE utf8mb4_bin;
-                    EOD
-                    );
-
-                    if (false === $result) {
-                        throw new PdoPersistenceException($connectionResource);
-                    }
-                }
-
-                $statement = $connectionResource->prepare(
-                    <<< EOD
-                SELECT `config_value`
-                FROM `core_config`
-                WHERE `config_key` = :key
-                LIMIT 1
-                EOD
-                );
-
-                $result = $statement->execute([
-                    'key' => $schemaConfigKey,
-                ]);
-
-                if (false === $result) {
-                    throw new PdoPersistenceException($connectionResource);
-                }
-
-                if ($statement->rowCount() === 0) {
+                if (is_null($actualSchemaVersion)) {
                     // No entry, so we can assume the schema isn't set up.
                     $this->migrateSchema($connectionResource, $schemaConfigKey);
                     return;
                 }
 
-                $result = $statement->fetch(Base::FETCH_ASSOC);
-
                 $expectedSchemaVersion = $this->getLatestSchemaVersion();
 
-                if ($result['config_value'] == $expectedSchemaVersion) {
+                if ($actualSchemaVersion === $expectedSchemaVersion) {
                     // Schema version matches.
                     return;
                 }
 
-                $actualSchemaVersion = $result['config_value'];
-
                 if ($actualSchemaVersion < $expectedSchemaVersion) {
                     $this->migrateSchema(
+                        $connectionResource,
                         $schemaConfigKey,
-                        $actualSchemaVersion
+                        $actualSchemaVersion,
                     );
+                    return;
                 }
 
                 throw new PersistenceException(
@@ -162,7 +117,77 @@ abstract class Pdo
         );
     }
 
+    /**
+     * @return array<array<string>>
+     */
     abstract protected function getSchema() : array;
+
+    private function createCoreConfigTableIfMissing(Base $connectionResource): void
+    {
+        $result = $connectionResource->query(
+            'SHOW TABLES LIKE "core_config"'
+        );
+
+        if (false === $result) {
+            throw new PdoPersistenceException($connectionResource);
+        }
+
+        $isTableMissing = $result->rowCount() === 0;
+
+        $result->closeCursor();
+
+        if ($isTableMissing) {
+            $this->createCoreConfigTable($connectionResource);
+        }
+    }
+
+    private function createCoreConfigTable(Base $connectionResource): void
+    {
+        $result = $connectionResource->query(
+            <<< EOD
+            CREATE TABLE `core_config` (
+                `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
+                `config_key` VARCHAR(255) NOT NULL DEFAULT '',
+                `config_value` VARCHAR(255) NOT NULL DEFAULT '',
+                PRIMARY KEY (`id`),
+                UNIQUE KEY(`config_key`)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE utf8mb4_bin;
+            EOD,
+        );
+
+        if (false === $result) {
+            throw new PdoPersistenceException($connectionResource);
+        }
+    }
+
+    private function getCurrentSchemaVersion(Base $connectionResource, string $schemaConfigKey): ?int
+    {
+        $statement = $connectionResource->prepare(
+            <<< EOD
+            SELECT `config_value`
+            FROM `core_config`
+            WHERE `config_key` = :key
+            LIMIT 1
+            EOD,
+        );
+
+        $result = $statement->execute([
+            'key' => $schemaConfigKey,
+        ]);
+
+        if (false === $result) {
+            throw new PdoPersistenceException($connectionResource);
+        }
+
+        if ($statement->rowCount() === 0) {
+            // No entry, so we can assume the schema isn't set up.
+            return null;
+        }
+
+        $result = $statement->fetch(Base::FETCH_ASSOC);
+
+        return (int) $result['config_value'];
+    }
 
     private function getLatestSchemaVersion(): int
     {
@@ -207,53 +232,66 @@ abstract class Pdo
     }
 
     private function migrateSchema(
+        Base $connectionResource,
         string $subSchemaName,
         ?int $afterSchemaVersion = null,
     ): void
     {
-        $this->withDatabaseConnection(
-            function (Base $connectionResource)
-            use ($subSchemaName, $afterSchemaVersion) {
-                $currentSchemaVersion = null;
-                foreach ($this->getSchema(
-                ) as $schemaVersion => $schemaCommands) {
-                    if (
-                        ! is_null($afterSchemaVersion)
-                        && $schemaVersion <= $afterSchemaVersion
-                    ) {
-                        // Migration has already been applied
-                        continue;
-                    }
+        $appliedSchemaVersion = null;
+        foreach ($this->getSchema() as $schemaVersion => $schemaCommands) {
+            if (
+                ! is_null($afterSchemaVersion)
+                && $schemaVersion <= $afterSchemaVersion
+            ) {
+                // Migration has already been applied
+                continue;
+            }
 
-                    foreach ($schemaCommands as $schemaCommand) {
-                        if (! $connectionResource->query($schemaCommand)) {
-                            throw new PdoPersistenceException(
-                                $connectionResource,
-                            );
-                        }
-                    }
+            $this->applySchemaCommands($connectionResource, $schemaCommands);
 
-                    $currentSchemaVersion = $schemaVersion;
-                }
+            $appliedSchemaVersion = $schemaVersion;
+        }
 
-                $statement = $connectionResource->prepare(
-                    <<< EOD
-                    INSERT INTO `core_config`
-                    SET `config_key` = :key,
-                    `config_value` = :value
-                    ON DUPLICATE KEY UPDATE `config_value` = :value;
-                    EOD,
+        if ($appliedSchemaVersion === null) {
+            // No schema changes applied
+            return;
+        }
+
+        $this->updateRecordedSchemaVersion($connectionResource, $subSchemaName, $appliedSchemaVersion);
+    }
+
+    /**
+     * @param array<string> $schemaCommands
+     */
+    private function applySchemaCommands(Base $connectionResource, array $schemaCommands): void
+    {
+        foreach ($schemaCommands as $schemaCommand) {
+            if (! $connectionResource->query($schemaCommand)) {
+                throw new PdoPersistenceException(
+                    $connectionResource,
                 );
+            }
+        }
+    }
 
-                $params = [
-                    'key' => $subSchemaName,
-                    'value' => $currentSchemaVersion,
-                ];
-
-                if (! $statement->execute($params)) {
-                    throw new PdoPersistenceException($connectionResource);
-                }
-            },
+    private function updateRecordedSchemaVersion(Base $connectionResource, string $subSchemaName, int $version): void
+    {
+        $statement = $connectionResource->prepare(
+            <<< EOD
+            INSERT INTO `core_config`
+            SET `config_key` = :key,
+            `config_value` = :value
+            ON DUPLICATE KEY UPDATE `config_value` = :value;
+            EOD,
         );
+
+        $params = [
+            'key' => $subSchemaName,
+            'value' => $version,
+        ];
+
+        if (! $statement->execute($params)) {
+            throw new PdoPersistenceException($connectionResource);
+        }
     }
 }
